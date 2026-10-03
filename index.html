@@ -262,8 +262,10 @@ function renderShell(){
 function urlUser(){
   var m = location.search.match(/[?&]user=([^&#]*)/), n = m ? decodeURIComponent(m[1].replace(/\+/g, ' ')).trim() : '';
   if (/[{}]/.test(n)) return '?';   // portal ne {name} ki jagah naam nahi bhara → MKT me kuch mat dikhao
+  // portal poora naam bhej sakta hai ("Suresh Patel") — sheet me pehla naam hai, isliye pehle shabd se milao
+  var first = norm(n.split(/\s+/)[0]);
   var list = NC_FIELDS.filter(function(f){ return f.k === 'sales'; })[0].options;
-  return list.filter(function(x){ return norm(x) === norm(n); })[0] || null;
+  return list.filter(function(x){ return norm(x) === first; })[0] || null;
 }
 
 function visibleRows(d){
