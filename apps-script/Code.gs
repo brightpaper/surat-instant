@@ -90,102 +90,74 @@ function ncLinkNewLead_(ld) {
 }
 
 /**
- * Dashboard ki row se Verify / Sales Person (STEP2) dropdown save karta hai — sirf FMS ke in 2 columns me.
- * Row Lead No se dhundhi jaati hai. A:G kabhi nahi likhta (wo Enquiry Sheet ke formula se aata hai).
+ * Dashboard ki row ka dropdown save karta hai (FMS ya MKT).
+ * Sirf us cell me likhta hai jisme SHEET me dropdown (data validation list) laga hai, aur sirf usi list ki value.
+ * Isliye columns aage-peeche karo to bhi sahi chalta hai — jo sheet me dropdown hai wahi dashboard me.
+ * Row Lead No se dhundhi jaati hai (FMS: Lead No column, MKT: Links ke "?ld=" se).
+ * Likhne ke baad ProductFormCode.gs ka onEdit trigger (pfOnEditFms) chalta hai — bilkul sheet me haath se badalne jaisa.
  */
-var NC_EDIT = {
-  verify: { head: 'verify', values: ['Yes', 'No'] },
-  sales:  { head: 'salesperson', values: [] }   // list ProductFormCode.gs ke PF_CFG.SALES_PERSONS se aati hai
-};
+var NC_TABS = { fms: 'FMS', mkt: 'MKT' };
 
 function ncUpdateCell_(data) {
-  if (data.tab === 'mkt') return ncUpdateMkt_(data);
-  var f = NC_EDIT[data.field];
-  if (data.field === 'sales') f.values = (typeof PF_CFG !== 'undefined' && PF_CFG.SALES_PERSONS) || [];
-  if (!f) throw new Error('Ye column edit nahi ho sakta.');
-  var value = ncClean_(data.value);
-  if (value && f.values.indexOf(value) === -1) throw new Error('Galat value: ' + value);
-  var ld = ncClean_(data.ld);
+  var name = NC_TABS[data.tab];
+  if (!name) throw new Error('Galat tab.');
+  var sh = SpreadsheetApp.getActive().getSheetByName(name);
+  if (!sh) throw new Error('"' + name + '" sheet nahi mili.');
+  var value = ncClean_(data.value), ld = ncClean_(data.ld), remark = ncClean_(data.remark), col = Number(data.col);
   if (!ld) throw new Error('Lead No nahi mila.');
+  if (!col) throw new Error('Column nahi mila.');
+  if (data.tab === 'fms' && col <= 7) throw new Error('FMS ke A:G Enquiry Sheet ke formula se aate hain — edit nahi ho sakte.');
 
-  var sh = SpreadsheetApp.getActive().getSheetByName('FMS');
-  // sirf upar ke 30 rows (header) + Lead No column padho — pura sheet nahi (fast)
   var lastRow = sh.getLastRow(), lastCol = sh.getLastColumn();
-  var top = sh.getRange(1, 1, Math.min(lastRow, 30), lastCol).getDisplayValues();
-  var hr = -1;
+  var top = sh.getRange(1, 1, Math.min(lastRow, 30), lastCol).getDisplayValues(), hr = -1;
   for (var r = 0; r < top.length; r++) {
     var n = top[r].map(ncNorm_);
-    if (n.indexOf('links') !== -1 && n.indexOf('leadno') !== -1) { hr = r; break; }
+    if (n.indexOf('companyname') !== -1 && (n.indexOf('links') !== -1 || n.indexOf('link') !== -1)) { hr = r; break; }
   }
-  if (hr === -1) throw new Error('FMS header row nahi mili.');
-  var head = top[hr].map(ncNorm_), cLead = head.indexOf('leadno'), cCol = head.lastIndexOf(f.head);
-  if (cCol < 7) throw new Error('"' + f.head + '" column nahi mila.');   // A:G = formula area, wahan nahi likhna
+  if (hr === -1) throw new Error(name + ' ki header row nahi mili.');
+  var head = top[hr].map(ncNorm_);
+  var row = ncFindRow_(sh, head, hr + 2, lastRow, ld);
+  if (!row) throw new Error(ld + ' ' + name + ' me nahi mila.');
 
-  var lds = sh.getRange(hr + 2, cLead + 1, Math.max(lastRow - hr - 1, 1), 1).getDisplayValues();
-  for (var k = 0; k < lds.length; k++) {
-    var i = hr + 1 + k;
-    if (ncClean_(lds[k][0]) === ld) {
-      sh.getRange(i + 1, cCol + 1).setValue(value);
-      // ProductFormCode.gs wala flow turant chalao: Verify Yes → Sales Person dropdown, Yes + Sales Person → MKT
-      // (sheet me haath se badalne pe ye pfOnEditFms karta hai; script ke likhne pe onEdit nahi chalta)
-      if (typeof pf_handleAssign_ === 'function') {
-        pf_resolveCols_();
-        pf_handleAssign_(sh, i + 1, i + 1);
-      }
-      return { ok: true, row: i + 1 };
-    }
+  var rng = sh.getRange(row, col), dv = rng.getDataValidation();
+  if (!dv || dv.getCriteriaType() !== SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) {
+    throw new Error(ld + ': is cell me sheet me dropdown nahi hai — edit nahi ho sakta.');
   }
-  throw new Error(ld + ' FMS me nahi mila.');
-}
-
-/**
- * MKT sheet edit. Row LD se (MKT me Lead No column nahi, Links ke "ld=" se — ProductFormCode.gs ka pf_mktLdMap_).
- *  field 'verify'           : Verify Yes / No  (sirf jab form wale step ka Actual aa gaya ho)
- *  field 'cell' + col (1-based): aage ke steps ka "Status" (Done) ya "Decision" (Yes / No) — sirf jab us step ka Planned aa gaya ho
- * Likhne ke baad ProductFormCode.gs ka pf_onEditMkt_ chalta hai — bilkul sheet me haath se badalne jaisa:
- *  Status Done → us step ka Actual, Decision → Status Done + Actual, khaali → dono khaali, agle step ke dropdowns.
- */
-function ncUpdateMkt_(data) {
-  if (typeof pf_mktCols_ !== 'function' || typeof pf_onEditMkt_ !== 'function') throw new Error('ProductFormCode.gs nahi mila.');
-  var value = ncClean_(data.value), ld = ncClean_(data.ld), remark = ncClean_(data.remark);
-  if (!ld) throw new Error('Lead No nahi mila.');
-
-  var mk = pf_mktCols_(), h = mk.hdr;   // MKT ke liye FMS/Enquiry headers padhne ki zaroorat nahi (fast)
-  var row = pf_findMktRow_(mk, ld);
-  if (!row) throw new Error(ld + ' MKT me nahi mila.');
-
-  var col, allowed, remarkCol = 0;
-  if (data.field === 'verify') {
-    if (!mk.verify) throw new Error('MKT me "Verify" column nahi mila.');
-    if (mk.actual && !String(mk.sh.getRange(row, mk.actual).getDisplayValue()).trim()) {
-      throw new Error(ld + ': pehle MKT form bharo (Actual khaali hai).');
-    }
-    col = mk.verify; allowed = ['Yes', 'No'];
-  } else if (data.field === 'cell') {
-    col = Number(data.col);
-    var name = h[col - 1];
-    if (!col || col === mk.status || (name !== 'status' && name !== 'decision')) throw new Error('Ye column edit nahi ho sakta.');
-    var planned = 0;
-    for (var j = col - 2; j >= 0; j--) if (h[j] === 'planned') { planned = j + 1; break; }
-    if (!planned || planned < mk.status) throw new Error('Ye column edit nahi ho sakta.');
-    if (!String(mk.sh.getRange(row, planned).getDisplayValue()).trim()) throw new Error(ld + ': is step ka Planned abhi nahi aaya.');
-    allowed = name === 'decision' ? ['Yes', 'No'] : [PF_CFG.DONE_TEXT];
-    if (name === 'decision') {
-      // Decision ke right ka pehla "Remark" (agle step ke Planned se pehle)
-      for (var x = col; x < h.length && h[x] !== 'planned'; x++) if (h[x] === 'remark') { remarkCol = x + 1; break; }
-      if (value === 'No' && !remark) throw new Error('Decision "No" ke liye Remark likhna zaroori hai.');
-      if (remark && !remarkCol) throw new Error('Decision ke baad "Remark" column nahi mila.');
-    }
-  } else {
-    throw new Error('Ye column edit nahi ho sakta.');
-  }
+  var allowed = (dv.getCriteriaValues()[0] || []).map(String);
   if (value && allowed.indexOf(value) === -1) throw new Error('Galat value: ' + value);
 
-  if (remarkCol && remark) mk.sh.getRange(row, remarkCol).setValue(remark);
-  var rng = mk.sh.getRange(row, col);
+  // Decision "No" → Remark zaroori (Decision ke right ka pehla Remark, agle step ke Planned se pehle)
+  var remarkCol = 0;
+  if (head[col - 1] === 'decision') {
+    for (var x = col; x < head.length && head[x] !== 'planned'; x++) if (head[x] === 'remark') { remarkCol = x + 1; break; }
+    if (value === 'No' && !remark) throw new Error('Decision "No" ke liye Remark likhna zaroori hai.');
+  }
+  if (remarkCol && remark) sh.getRange(row, remarkCol).setValue(remark);
+
+  var old = rng.getDisplayValue();
   rng.setValue(value);
-  pf_onEditMkt_(rng);          // backend ka onEdit wala hi kaam (wo khud flush karta hai)
+  SpreadsheetApp.flush();
+  // script ke likhne se onEdit trigger nahi chalta → khud chalao (Status/Actual, agle step ke dropdown, MKT me bhejna…)
+  if (typeof pfOnEditFms === 'function') {
+    pfOnEditFms({ range: rng, value: value, oldValue: old, source: SpreadsheetApp.getActive() });
+  }
   return { ok: true, row: row };
+}
+
+// LD wali row: "Lead No" column ho to usse, warna kisi bhi formula ke "?ld=LD-xxx" se (MKT ke Links)
+function ncFindRow_(sh, head, firstRow, lastRow, ld) {
+  var n = lastRow - firstRow + 1;
+  if (n < 1) return 0;
+  var target = ld.toUpperCase(), cLead = head.indexOf('leadno');
+  if (cLead !== -1) {
+    var v = sh.getRange(firstRow, cLead + 1, n, 1).getDisplayValues();
+    for (var i = 0; i < n; i++) if (ncClean_(v[i][0]).toUpperCase() === target) return firstRow + i;
+    return 0;
+  }
+  var f = sh.getRange(firstRow, 1, n, head.length).getFormulas();
+  var re = new RegExp('[?&]ld=' + target.replace(/[^A-Z0-9-]/g, '') + '(?![0-9])', 'i');
+  for (var r = 0; r < n; r++) for (var c = 0; c < f[r].length; c++) if (f[r][c] && re.test(f[r][c])) return firstRow + r;
+  return 0;
 }
 
 function ncClean_(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }

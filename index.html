@@ -147,17 +147,26 @@ function getValues(sheet, render){
 }
 
 // sheet me jo columns hide kiye hain unki list (true = hidden)
-function getHiddenCols(sheet){
+// ek hi call me: kaun se columns hide hain + kis cell me sheet ne dropdown (data validation list) lagaya hai
+function getMeta(sheet){
   var url = 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '?ranges=' + encodeURIComponent("'" + sheet + "'") +
-            '&fields=' + encodeURIComponent('sheets(data(columnMetadata(hiddenByUser)))') + '&key=' + API_KEY;
+            '&fields=' + encodeURIComponent('sheets(data(columnMetadata(hiddenByUser),rowData(values(dataValidation(condition)))))') + '&key=' + API_KEY;
   return fetch(url).then(function(r){ return r.json(); }).then(function(j){
-    var meta = (((j.sheets || [])[0] || {}).data || [])[0];
-    return ((meta && meta.columnMetadata) || []).map(function(m){ return !!(m && m.hiddenByUser); });
-  }).catch(function(){ return []; });
+    var meta = (((j.sheets || [])[0] || {}).data || [])[0] || {};
+    var hidden = (meta.columnMetadata || []).map(function(m){ return !!(m && m.hiddenByUser); });
+    var dv = (meta.rowData || []).map(function(row){
+      return ((row && row.values) || []).map(function(c){
+        var cond = c && c.dataValidation && c.dataValidation.condition;
+        return cond && cond.type === 'ONE_OF_LIST' ? (cond.values || []).map(function(v){ return String(v.userEnteredValue); }) : null;
+      });
+    });
+    return { hidden: hidden, dv: dv };
+  }).catch(function(){ return { hidden: [], dv: [] }; });
 }
 
-function parseSheet(disp, form, hidden){
-  hidden = hidden || [];
+function parseSheet(disp, form, meta){
+  meta = meta || {};
+  var hidden = meta.hidden || [], dv = meta.dv || [];
   // header row: jisme "Links" + ("Lead No" ya "Company Name") ho
   var hr = -1;
   for (var r = 0; r < Math.min(disp.length, 30); r++) {
@@ -186,12 +195,13 @@ function parseSheet(disp, form, hidden){
 
   var rows = [];
   for (var r2 = hr + 1; r2 < disp.length; r2++) {
-    var d = disp[r2] || [], f = (form[r2] || []), any = false;
+    var d = disp[r2] || [], f = (form[r2] || []), opt = dv[r2] || [], any = false;
     var cells = columns.map(function(col){
       var cell = { v: d[col.c] == null ? '' : String(d[col.c]) };
       if (cell.v !== '') any = true;
       var m = String(f[col.c] || '').match(/HYPERLINK\(\s*"([^"]+)"\s*[,;]\s*"([^"]*)"/i);
       if (m) { cell.u = m[1]; cell.v = cell.v || m[2]; any = true; }
+      if (opt[col.c]) cell.opts = opt[col.c];   // sheet me is cell me dropdown hai
       return cell;
     });
     if (any) rows.push({ r: r2 + 1, c: cells });
@@ -202,7 +212,7 @@ function parseSheet(disp, form, hidden){
 function load(){
   var cfg = tabCfg(), key = cfg.key;
   state.loading = true; setUpd('Loading…');
-  return Promise.all([getValues(cfg.sheet, 'FORMATTED_VALUE'), getValues(cfg.sheet, 'FORMULA'), getHiddenCols(cfg.sheet)])
+  return Promise.all([getValues(cfg.sheet, 'FORMATTED_VALUE'), getValues(cfg.sheet, 'FORMULA'), getMeta(cfg.sheet)])
     .then(function(res){
       var d = parseSheet(res[0], res[1], res[2]);
       d._at = Date.now(); state.data[key] = d; state.loading = false;
@@ -410,11 +420,11 @@ function renderTable(){
       if (i < 2) cls.push('sticky');
       if (wrapCols.indexOf(i) !== -1) cls.push('wrapcell');
       var ed = edit[i], ld = ed ? rowLd(d, r) : '';
-      if (ed && ld && ed.show(r)) inner = '<select data-field="' + ed.field + '" data-ld="' + esc(ld) + '" data-i="' + i + '"' +
+      if (ed && cell.opts && ld) inner = '<select data-field="cell" data-ld="' + esc(ld) + '" data-i="' + i + '"' +
         (state.pending[state.tab + '|' + ld + '|' + i] ? ' disabled' : '') +
         ' class="' + (cell.v && (nv === 'yes' || nv === 'no') ? nv : nv === 'done' ? 'yes' : '') + (state.pending[state.tab + '|' + ld + '|' + i] ? ' saving' : '') + '">' +
-        '<option value="">—</option>' + ed.values.map(function(v){ return '<option' + (norm(v) === nv ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('') +
-        (cell.v && !ed.values.some(function(v){ return norm(v) === nv; }) ? '<option selected>' + esc(cell.v) + '</option>' : '') + '</select>';
+        '<option value="">—</option>' + cell.opts.map(function(v){ return '<option' + (norm(v) === nv ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('') +
+        (cell.v && !cell.opts.some(function(v){ return norm(v) === nv; }) ? '<option selected>' + esc(cell.v) + '</option>' : '') + '</select>';
       else if (cell.u) inner = '<a class="lk ' + (nv === 'editform' ? 'edit' : 'fill') + '" href="' + esc(cell.u) + '" target="_blank" rel="noopener">' + esc(cell.v) + '</a>';
       else if (nv === 'done') inner = '<span class="badge">Done</span>';
       else if (nv === 'yes') inner = '<span class="yes">Yes</span>';
@@ -443,13 +453,10 @@ function renderTable(){
 }
 
 /* ---------- Row dropdowns → sheet me save ----------
- *  FMS: Verify + Sales Person (STEP2)   |   MKT: Verify (Yes → agla step chalu, No → aage kuch nahi)
+ *  Dropdown wahi jo SHEET me hai: jis cell me backend ne data validation list lagayi hai (getMeta se aati hai),
+ *  usi list ke options ke saath. Columns aage-peeche karo to bhi apne aap sahi.
+ *  FMS ke A:G (Enquiry Sheet ka formula) kabhi edit nahi hote.
  */
-var EDIT_FIELDS = {
-  verify: ['Yes', 'No'],
-  sales:  NC_FIELDS.filter(function(f){ return f.k === 'sales'; })[0].options
-};
-
 // row ka LD: "Lead No" column se, warna Links ke URL (…?ld=LD-185) se (MKT me Lead No column nahi hai)
 function rowLd(d, r){
   var i = colIndex(d, ['leadno']);
@@ -458,40 +465,16 @@ function rowLd(d, r){
   return m ? decodeURIComponent(m[1]) : '';
 }
 
+// har column ki extra jaankari: sheet column number, aur Decision ho to uska Remark column
 function editCols(d){
   var out = {};
-  if (state.tab === 'mkt') {
-    // ProductFormCode.gs jaisa: Verify dropdown tab jab form wale step ka Actual aa gaya (Status ke right ka pehla Actual)
-    var iSt = colIndex(d, ['status']), iAct = -1;
-    for (var a = iSt + 1; iSt >= 0 && a < d.columns.length; a++) if (norm(d.columns[a].name) === 'actual') { iAct = a; break; }
-    var iVer = colIndex(d, ['verify']);
-    if (iVer >= 0) out[iVer] = { field: 'verify', values: EDIT_FIELDS.verify,
-      show: function(r){ return iAct >= 0 && r.c[iAct].v.trim() !== ''; } };
-    // aage ke steps (pf_mktStepDropdowns_ jaisa): Status → "Done", Decision → Yes / No — sirf jab us step ka Planned aa gaya ho
-    d.columns.forEach(function(c, i){
-      var n = norm(c.name);
-      if (i === iSt || (n !== 'status' && n !== 'decision')) return;
-      var p = -1;
-      for (var k = i - 1; k >= 0; k--) if (norm(d.columns[k].name) === 'planned') { p = k; break; }
-      if (p < 0 || p < iSt) return;
-      var ri = -1;   // Decision ke right ka pehla Remark (agle Planned se pehle)
-      if (n === 'decision') for (var x = i + 1; x < d.columns.length && norm(d.columns[x].name) !== 'planned'; x++) if (norm(d.columns[x].name) === 'remark') { ri = x; break; }
-      out[i] = { field: 'cell', col: c.c + 1, values: n === 'decision' ? EDIT_FIELDS.verify : ['Done'], decision: n === 'decision', remarkI: ri,
-        show: function(r){ return r.c[p].v.trim() !== ''; } };
-    });
-    return out;
-  }
-  if (state.tab !== 'fms') return out;
-  // FMS: "Verify" aur Platform ke baad wala "Sales Person" (A:G wala Enquiry Sheet se aata hai, use nahi chhedna)
-  // ProductFormCode.gs jaisa hi: Verify tab jab Actual aa gaya (form bhara), Sales Person tab jab Verify = Yes
-  var iLinks = colIndex(d, ['links', 'link']), iActual = -1, iVerify = -1;
-  for (var k = iLinks - 1; k >= 0; k--) if (norm(d.columns[k].name) === 'actual') { iActual = k; break; }
+  if (state.tab !== 'fms' && state.tab !== 'mkt') return out;
   d.columns.forEach(function(c, i){
-    var n = norm(c.name);
-    if (n === 'verify') { iVerify = i; out[i] = { field: 'verify', values: EDIT_FIELDS.verify,
-      show: function(r){ return iActual < 0 || r.c[iActual].v.trim() !== ''; } }; }
-    else if (n === 'salesperson' && c.c >= 7) out[i] = { field: 'sales', values: EDIT_FIELDS.sales,
-      show: function(r){ return iVerify >= 0 && norm(r.c[iVerify].v) === 'yes'; } };
+    if (state.tab === 'fms' && c.c < 7) return;   // A:G = Enquiry Sheet ka formula — kabhi nahi likhna
+    var ri = -1;   // Decision ke right ka pehla Remark (agle Planned se pehle)
+    if (norm(c.name) === 'decision')
+      for (var x = i + 1; x < d.columns.length && norm(d.columns[x].name) !== 'planned'; x++) if (norm(d.columns[x].name) === 'remark') { ri = x; break; }
+    out[i] = { col: c.c + 1, decision: norm(c.name) === 'decision', remarkI: ri };
   });
   return out;
 }
@@ -517,7 +500,7 @@ function saveCell(){
     if (remark && ri >= 0) row.c[ri].v = remark;
     renderTable();
     fetch(SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'update', tab: tab, field: ed.field, col: ed.col || 0, ld: ld, value: value, remark: remark }) })
+        body: JSON.stringify({ action: 'update', tab: tab, col: ed.col, ld: ld, value: value, remark: remark }) })
       .then(function(r){ return r.json(); })
       .then(function(j){
         if (!j.ok) throw new Error(j.error || 'Save nahi hua');
