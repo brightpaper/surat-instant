@@ -555,6 +555,11 @@ function renderTable(){
   document.getElementById('stats').innerHTML = '<span>Showing <b>' + rows.length + '</b> / ' + all.length + '</span>' +
     (iLinks >= 0 ? '<span>Pending <b style="color:var(--orange)">' + pend + '</b></span><span>Done <b style="color:var(--green)">' + done + '</b></span>' : '');
 
+  // FREEZE: pehle step (pehla "Planned") se pehle ke saare columns (Timestamp … Location) left me fixed
+  var firstStep = -1;
+  d.columns.forEach(function(col, i){ if (firstStep < 0 && d.groups.some(function(g){ return col.c === g.from; })) firstStep = i; });
+  var stickyN = firstStep > 0 ? firstStep : 2;
+
   // header ke upar 2 rows: step ka NAAM (upar) + "STEP n" (neeche) — dono orange, step ke beech border
   var grpHtml = '', gStart = {};
   if (d.groups.length) {
@@ -563,7 +568,7 @@ function renderTable(){
       var c = d.columns[i].c, g = d.groups.filter(function(g){ return c >= g.from && c <= g.to; })[0], span = 1;
       if (g) { while (i + span < d.columns.length && d.columns[i + span].c <= g.to) span++; gStart[i] = true; }
       else while (i + span < d.columns.length && !d.groups.some(function(x){ var cc = d.columns[i + span].c; return cc >= x.from && cc <= x.to; })) span++;
-      var cls = [(i + span <= 2) ? 'sticky' : '', g ? 'gstart' : ''].filter(Boolean).join(' ');
+      var cls = [(i + span <= stickyN) ? 'sticky' : '', g ? 'gstart' : ''].filter(Boolean).join(' ');
       nameCells.push('<th colspan="' + span + '"' + (cls ? ' class="' + cls + '"' : '') + '>' + (g ? esc(g.text) : '') + '</th>');
       stepCells.push('<th colspan="' + span + '"' + (cls ? ' class="' + cls + '"' : '') + '>' + (g && g.step ? esc(g.step) : '') + '</th>');
       i += span;
@@ -575,7 +580,7 @@ function renderTable(){
   var cfNow = state.colFilters[state.tab] || {}, srtNow = state.sort[state.tab];
   var head = '<tr class="hdr">' + d.columns.map(function(c, i){
     var on = !!cfNow[c.name] || (srtNow && srtNow.name === c.name);
-    var hc = [(i < 2 ? 'sticky' : ''), (gStart[i] ? 'gstart' : '')].filter(Boolean).join(' ');
+    var hc = [(i < stickyN ? 'sticky' : ''), (gStart[i] ? 'gstart' : '')].filter(Boolean).join(' ');
     return '<th' + (hc ? ' class="' + hc + '"' : '') + '><div class="th-in"><span>' + esc(c.name) + '</span>' +
       '<button type="button" class="fbtn' + (on ? ' on' : '') + '" data-ci="' + i + '" title="Filter / sort" aria-label="' + esc(c.name) + ' filter">' +
       (srtNow && srtNow.name === c.name ? (srtNow.dir > 0 ? '▲' : '▼') : '▾') + '</button></div></th>';
@@ -585,7 +590,7 @@ function renderTable(){
   var body = rows.map(function(r){
     return '<tr>' + r.c.map(function(cell, i){
       var cls = [], inner, nv = norm(cell.v);
-      if (i < 2) cls.push('sticky');
+      if (i < stickyN) cls.push('sticky');
       if (gStart[i]) cls.push('gstart');
       if (wrapCols.indexOf(i) !== -1) cls.push('wrapcell');
       var ed = edit[i], ld = ed ? rowLd(d, r) : '';
@@ -614,12 +619,22 @@ function renderTable(){
 
   var tbl = wrap.querySelector('table');
   if (tbl) {
-    // fractional width (zoom) bhi poora lo, warna fixed columns ke beech patli line dikhti hai
-    var first = tbl.querySelector('tr.hdr th'), w = first ? first.getBoundingClientRect().width : 0;
+    // har frozen column ka left = usse pehle ke frozen columns ki chaudai ka jod (fractional width bhi)
+    var hdrCells = tbl.querySelectorAll('tr.hdr th'), lefts = [], acc = 0;
+    for (var x = 0; x < stickyN && x < hdrCells.length; x++) { lefts.push(acc); acc += hdrCells[x].getBoundingClientRect().width; }
+    // screen chhoti ho aur frozen hissa 60% se zyada ho jaye → sirf pehle 2 column freeze
+    if (acc > wrap.clientWidth * 0.6 && stickyN > 2) {
+      Array.prototype.forEach.call(tbl.querySelectorAll('.sticky'), function(el){ el.classList.remove('sticky'); });
+      lefts = [0, hdrCells[0] ? hdrCells[0].getBoundingClientRect().width : 0];
+      Array.prototype.forEach.call(tbl.querySelectorAll('tr'), function(tr){
+        if (tr.classList.contains('grp')) return;
+        var cells = tr.children; for (var y = 0; y < 2 && y < cells.length; y++) cells[y].classList.add('sticky');
+      });
+    }
     Array.prototype.forEach.call(tbl.querySelectorAll('tr'), function(tr){
-      var s = tr.querySelectorAll('.sticky');
-      if (s[0]) s[0].style.left = '0px';
-      if (s[1]) s[1].style.left = w + 'px';
+      var st = tr.querySelectorAll('.sticky');
+      if (tr.classList.contains('grp')) { if (st[0]) st[0].style.left = '0px'; return; }
+      Array.prototype.forEach.call(st, function(el, k){ el.style.left = (lefts[k] || 0) + 'px'; });
     });
   }
 }
