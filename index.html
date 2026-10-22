@@ -53,6 +53,8 @@
   thead th{background:var(--green);color:#fff;font-weight:600}
   thead tr.grp th{background:var(--orange);color:#fff;text-align:center;font-weight:700;font-size:13px;height:32px;border-bottom-color:var(--orange)}
   thead tr.hdr th{height:40px}
+  thead tr.steprow th{background:#8a3d0c;color:#fff;text-align:center;font-weight:700;font-size:12px;letter-spacing:.6px;height:26px;border-bottom-color:#8a3d0c}
+  thead tr.steprow th.sticky{background:#8a3d0c}
   tbody tr:hover td{background:#fafaf8}
   td.sticky,th.sticky{position:sticky;z-index:4;background:#fff}
   th.sticky{z-index:7;background:var(--green)}
@@ -205,10 +207,18 @@ function parseSheet(disp, form, meta, mustHave){
   head.forEach(function(h, i){ var t = String(h).replace(/\s+/g, ' ').trim(); if (t && !hidden[i]) columns.push({ c: i, name: t }); });
   var lastCol = columns.length ? columns[columns.length - 1].c : 0;
 
-  // step titles (orange row): upar ki pehli row jisme text ho
+  // STEP row (jaise "STEP2") — orange row ke upar dikhti hai
+  var STEP_RE = /^step\s*-?\s*(\d+)/i, steps = [];
+  for (var sr = 0; sr < hr && !steps.length; sr++) {
+    var srow = disp[sr] || [];
+    for (var sc = 0; sc <= lastCol; sc++) { var sm = String(srow[sc] || '').trim().match(STEP_RE); if (sm) steps.push({ c: sc, text: 'STEP ' + sm[1] }); }
+  }
+
+  // step titles (orange row): upar ki pehli row jisme text ho (STEP wali row chhod kar)
   var groups = [];
   for (var t = 0; t < hr; t++) {
     var row = disp[t] || [], marks = [];
+    if (row.some(function(x){ return STEP_RE.test(String(x || '').trim()); })) continue;
     for (var c = 0; c <= lastCol; c++) { var v = String(row[c] || '').trim(); if (/[a-z]{3}/i.test(v) && !/^\d/.test(v)) marks.push({ c: c, text: v }); }
     if (marks.length) {
       marks.forEach(function(m, i){
@@ -232,7 +242,7 @@ function parseSheet(disp, form, meta, mustHave){
     });
     if (any) rows.push({ r: r2 + 1, c: cells });
   }
-  return { columns: columns, groups: groups, rows: rows };
+  return { columns: columns, groups: groups, steps: steps, rows: rows };
 }
 
 function load(){
@@ -539,6 +549,20 @@ function renderTable(){
       i += span;
     }
     grpHtml = '<tr class="grp">' + cells.join('') + '<th></th></tr>';
+
+    // STEP row: har orange group ke upar uska STEP number
+    if (d.steps && d.steps.length) {
+      var sCells = [], k = 0;
+      while (k < d.columns.length) {
+        var cc = d.columns[k].c, gg = d.groups.filter(function(g){ return cc >= g.from && cc <= g.to; })[0], sp = 1;
+        if (gg) while (k + sp < d.columns.length && d.columns[k + sp].c <= gg.to) sp++;
+        else while (k + sp < d.columns.length && !d.groups.some(function(x){ var c2 = d.columns[k + sp].c; return c2 >= x.from && c2 <= x.to; })) sp++;
+        var st = gg ? d.steps.filter(function(s){ return s.c >= gg.from && s.c <= gg.to; })[0] : null;
+        sCells.push('<th colspan="' + sp + '"' + (k + sp <= 2 ? ' class="sticky"' : '') + '>' + (st ? esc(st.text) : '') + '</th>');
+        k += sp;
+      }
+      grpHtml = '<tr class="steprow">' + sCells.join('') + '<th></th></tr>' + grpHtml;
+    }
   }
   var cfNow = state.colFilters[state.tab] || {}, srtNow = state.sort[state.tab];
   var head = '<tr class="hdr">' + d.columns.map(function(c, i){
