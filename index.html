@@ -659,10 +659,18 @@ function editCols(d){
   if (state.tab !== 'fms' && state.tab !== 'mkt') return out;
   d.columns.forEach(function(c, i){
     if (state.tab === 'fms' && c.c < 7) return;   // A:G = Enquiry Sheet ka formula — kabhi nahi likhna
-    var ri = -1;   // Decision ke right ka pehla Remark (agle Planned se pehle)
-    if (norm(c.name) === 'decision')
-      for (var x = i + 1; x < d.columns.length && norm(d.columns[x].name) !== 'planned'; x++) if (norm(d.columns[x].name) === 'remark') { ri = x; break; }
-    out[i] = { col: c.c + 1, decision: norm(c.name) === 'decision', remarkI: ri };
+    var ri = -1, di = -1;   // Decision step ke andar ka Remark aur Description (pichle Planned se agle Planned tak)
+    if (norm(c.name) === 'decision') {
+      var a0 = i; while (a0 > 0 && norm(d.columns[a0].name) !== 'planned') a0--;
+      for (var x = a0; x < d.columns.length; x++) {
+        var nx = norm(d.columns[x].name);
+        if (x > i && nx === 'planned') break;
+        if (ri < 0 && nx === 'remark') ri = x;
+        if (di < 0 && nx === 'description') di = x;
+      }
+    }
+    out[i] = { col: c.c + 1, decision: norm(c.name) === 'decision', remarkI: ri, descI: di,
+               descCol: di >= 0 ? d.columns[di].c + 1 : 0 };
   });
   return out;
 }
@@ -675,27 +683,43 @@ function saveCell(){
   if (!ed || !row) return;
   var old = row.c[i].v, ri = ed.remarkI, oldRemark = ri >= 0 ? row.c[ri].v : '';
 
+  var di = ed.descI, oldDesc = di >= 0 ? row.c[di].v : '';
   if (ed.decision && value === 'No') {
-    askRemark(ld, oldRemark, function(remark){ if (remark == null) s.value = old; else send(remark); });
+    askRemark(ld, oldRemark, function(remark){ if (remark == null) s.value = old; else send(remark, ''); });
     return;
   }
-  send('');
+  if (ed.decision && value === 'Yes' && di >= 0) {
+    askText(ld + ' · Decision: Yes', 'Description', 'Kab se kaam shuru karenge? Order / rate / delivery ki baat…', oldDesc,
+      'Decision "Yes" ke liye Description likhna zaroori hai.',
+      function(desc){ if (desc == null) s.value = old; else send('', desc); });
+    return;
+  }
+  send('', '');
 
-  function send(remark){
+  function send(remark, desc){
     var key = tab + '|' + ld + '|' + i;
     state.pending[key] = 1;
     row.c[i].v = value;
     if (remark && ri >= 0) row.c[ri].v = remark;
+    if (desc && di >= 0) row.c[di].v = desc;
     renderTable();
     fetch(SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ action: 'update', tab: tab, col: ed.col, ld: ld, value: value, remark: remark }) })
       .then(function(r){ return r.json(); })
       .then(function(j){
         if (!j.ok) throw new Error(j.error || 'Save nahi hua');
+        if (!desc || !ed.descCol) return j;
+        // Decision Yes ka Description — usi step ke "Description" column me
+        return fetch(SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ action: 'update', tab: tab, col: ed.descCol, ld: ld, value: desc, remark: '' }) })
+          .then(function(r){ return r.json(); })
+          .then(function(j2){ if (!j2.ok) throw new Error('Decision save hua, par Description nahi: ' + (j2.error || '')); return j2; });
+      })
+      .then(function(){
         toast(ld + ' · saved');
         if (tab === 'fms') delete state.data.mkt;   // MKT tab kholne pe naya data aaye
       })
-      .catch(function(err){ row.c[i].v = old; if (ri >= 0) row.c[ri].v = oldRemark; toast(ld + ': ' + (err.message || 'Save nahi hua'), true); })
+      .catch(function(err){ row.c[i].v = old; if (ri >= 0) row.c[ri].v = oldRemark; if (di >= 0) row.c[di].v = oldDesc; toast(ld + ': ' + (err.message || 'Save nahi hua'), true); })
       .then(function(){
         delete state.pending[key];
         if (state.tab !== tab) return;
@@ -707,12 +731,17 @@ function saveCell(){
 
 // Decision "No" → Remark zaroori
 function askRemark(ld, current, done){
+  askText(ld + ' · Decision: No', 'Remark', 'No kyun? (zaroori)', current, 'Decision "No" ke liye Remark likhna zaroori hai.', done);
+}
+
+// chhota popup: ek zaroori text (title, label, placeholder, purana text, khali hone pe message)
+function askText(title, label, placeholder, current, emptyMsg, done){
   var m = document.createElement('div');
   m.className = 'modal';
   m.innerHTML = '<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="rmTitle">' +
-    '<div class="modal-head"><h2 id="rmTitle">' + esc(ld) + ' · Decision: No</h2><button type="button" class="x" aria-label="Close">×</button></div>' +
-    '<form novalidate><div class="fld"><label for="rm_text">Remark <i>*</i></label>' +
-    '<textarea id="rm_text" rows="3" placeholder="No kyun? (zaroori)">' + esc(current) + '</textarea></div>' +
+    '<div class="modal-head"><h2 id="rmTitle">' + esc(title) + '</h2><button type="button" class="x" aria-label="Close">×</button></div>' +
+    '<form novalidate><div class="fld"><label for="rm_text">' + esc(label) + ' <i>*</i></label>' +
+    '<textarea id="rm_text" rows="3" placeholder="' + esc(placeholder) + '">' + esc(current) + '</textarea></div>' +
     '<div class="modal-foot"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Save</button></div>' +
     '</form></div>';
   document.body.appendChild(m);
@@ -726,7 +755,7 @@ function askRemark(ld, current, done){
   form.onsubmit = function(e){
     e.preventDefault();
     var v = ta.value.replace(/\s+/g, ' ').trim();
-    if (!v) { toast('Decision "No" ke liye Remark likhna zaroori hai.', true); ta.focus(); return; }
+    if (!v) { toast(emptyMsg, true); ta.focus(); return; }
     close(v);
   };
   ta.focus();
