@@ -617,27 +617,40 @@ function renderTable(){
     b.onclick = function(e){ e.stopPropagation(); openColFilter(this, +this.getAttribute('data-ci')); };
   });
 
-  var tbl = wrap.querySelector('table');
-  if (tbl) {
-    // har frozen column ka left = usse pehle ke frozen columns ki chaudai ka jod (fractional width bhi)
-    var hdrCells = tbl.querySelectorAll('tr.hdr th'), lefts = [], acc = 0;
-    for (var x = 0; x < stickyN && x < hdrCells.length; x++) { lefts.push(acc); acc += hdrCells[x].getBoundingClientRect().width; }
-    // screen chhoti ho aur frozen hissa 60% se zyada ho jaye → sirf pehle 2 column freeze
-    if (acc > wrap.clientWidth * 0.6 && stickyN > 2) {
-      Array.prototype.forEach.call(tbl.querySelectorAll('.sticky'), function(el){ el.classList.remove('sticky'); });
-      lefts = [0, hdrCells[0] ? hdrCells[0].getBoundingClientRect().width : 0];
-      Array.prototype.forEach.call(tbl.querySelectorAll('tr'), function(tr){
-        if (tr.classList.contains('grp')) return;
-        var cells = tr.children; for (var y = 0; y < 2 && y < cells.length; y++) cells[y].classList.add('sticky');
-      });
-    }
-    Array.prototype.forEach.call(tbl.querySelectorAll('tr'), function(tr){
-      var st = tr.querySelectorAll('.sticky');
-      if (tr.classList.contains('grp')) { if (st[0]) st[0].style.left = '0px'; return; }
-      Array.prototype.forEach.call(st, function(el, k){ el.style.left = (lefts[k] || 0) + 'px'; });
-    });
-  }
+  applySticky(stickyN);
+  // web font (Fira Sans) baad me load hota hai → column chaude badalte hain → dobara naapo
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function(){ applySticky(stickyN); });
+  state._stickyN = stickyN;
 }
+
+
+// Frozen columns ka left position — har baar asli chaudai naap ke (font load / resize ke baad bhi)
+function applySticky(stickyN){
+  var wrap = document.getElementById('wrap'), tbl = wrap && wrap.querySelector('table');
+  if (!tbl) return;
+  Array.prototype.forEach.call(tbl.querySelectorAll('.sticky'), function(el){ el.classList.remove('sticky'); el.style.left = ''; });
+  var hdr = tbl.querySelector('tr.hdr'); if (!hdr) return;
+  var n = stickyN, cells = hdr.children, acc = 0;
+  for (var x = 0; x < n && x < cells.length; x++) acc += cells[x].getBoundingClientRect().width;
+  if (acc > wrap.clientWidth * 0.6 && n > 2) n = 2;          // chhoti screen → sirf 2 column freeze
+  // body + green header: pehle n cells
+  Array.prototype.forEach.call(tbl.querySelectorAll('tr'), function(tr){
+    if (tr.classList.contains('grp')) return;
+    for (var y = 0; y < n && y < tr.children.length; y++) tr.children[y].classList.add('sticky');
+  });
+  var lefts = [], a = 0;
+  for (var k = 0; k < n && k < cells.length; k++) { lefts.push(a); a += cells[k].getBoundingClientRect().width; }
+  Array.prototype.forEach.call(tbl.querySelectorAll('tr'), function(tr){
+    if (tr.classList.contains('grp')) {
+      // orange rows: pehla cell sirf tab fixed jab wo frozen hisse ke andar hi khatam ho
+      var first = tr.children[0], span = first ? +(first.getAttribute('colspan') || 1) : 0;
+      if (first && span <= n) { first.classList.add('sticky'); first.style.left = '0px'; }
+      return;
+    }
+    for (var y = 0; y < n && y < tr.children.length; y++) tr.children[y].style.left = lefts[y] + 'px';
+  });
+}
+window.addEventListener('resize', function(){ if (state._stickyN) applySticky(state._stickyN); });
 
 /* ---------- Row dropdowns → sheet me save ----------
  *  Dropdown wahi jo SHEET me hai: jis cell me backend ne data validation list lagayi hai (getMeta se aati hai),
