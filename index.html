@@ -701,10 +701,12 @@ function saveCell(){
     askRemark(ld, oldRemark, function(remark){ if (remark == null) s.value = old; else send(remark, ''); });
     return;
   }
-  if (ed.decision && value === 'Yes' && di >= 0) {
-    askText(ld + ' · Decision: Yes', 'Description', 'Kab se kaam shuru karenge? Order / rate / delivery ki baat…', oldDesc,
-      'Decision "Yes" ke liye Description likhna zaroori hai.',
-      function(desc){ if (desc == null) s.value = old; else send('', desc); });
+  if (ed.decision && value === 'Yes' && (di >= 0 || ri >= 0)) {
+    // "Description" column ho to usme, warna isi step ke "Remark" me (No wale Remark ki tarah hi save)
+    var useDesc = di >= 0;
+    askText(ld + ' · Decision: Yes', useDesc ? 'Description' : 'Remark', 'Kab se kaam shuru karenge? Order / rate / delivery ki baat…',
+      useDesc ? oldDesc : oldRemark, 'Decision "Yes" ke liye ' + (useDesc ? 'Description' : 'Remark') + ' likhna zaroori hai.',
+      function(txt){ if (txt == null) s.value = old; else if (useDesc) send('', txt); else send(txt, ''); });
     return;
   }
   send('', '');
