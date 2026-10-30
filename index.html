@@ -56,6 +56,9 @@
   thead tr.steprow th{font-size:12px;letter-spacing:.6px;height:24px;border-top:1px solid rgba(255,255,255,.35)}
   /* step ke beech mota border (sheet jaisa) */
   th.gstart,td.gstart{border-left:2px solid #1e1e1e}
+  /* Verify "No" ke baad ke steps — block (gray) */
+  tbody td.blocked{background:#e4e4e4 !important;color:#9a9a9a}
+  tbody tr:hover td.blocked{background:#dcdcdc !important}
   tbody tr:hover td{background:#fafaf8}
   td.sticky,th.sticky{position:sticky;z-index:4;background:#fff}
   th.sticky{z-index:7;background:var(--green)}
@@ -520,6 +523,16 @@ function renderTable(){
   var iDelay = d.columns.map(function(c, i){ return /timedelay/.test(norm(c.name)) ? i : -1; }).filter(function(i){ return i >= 0; });
   var wrapCols = d.columns.map(function(c, i){ return /description|remark|requirement|reference/.test(norm(c.name)) ? i : -1; }).filter(function(i){ return i >= 0; });
   var edit = editCols(d), all = visibleRows(d);   // MKT user → sirf apni parties
+  // har Verify ke baad agla step (agla "Planned") — Verify "No" ho to wahan se aage block
+  var verifyNext = [];
+  d.columns.forEach(function(c, i){
+    if (norm(c.name) !== 'verify') return;
+    for (var j = i + 1; j < d.columns.length; j++) if (norm(d.columns[j].name) === 'planned') { verifyNext.push({ v: i, from: j }); break; }
+  });
+  function blockFrom(r){
+    for (var k = 0; k < verifyNext.length; k++) if (norm(r.c[verifyNext[k].v].v) === 'no') return verifyNext[k].from;
+    return -1;
+  }
 
   var plat = document.getElementById('plat');
   if (iPlat >= 0) {
@@ -588,13 +601,16 @@ function renderTable(){
 
   var sheetUrl = 'https://docs.google.com/spreadsheets/d/' + (cfg.sheetId || SHEET_ID) + '/edit#gid=' + cfg.gid + '&range=A';
   var body = rows.map(function(r){
+    var bFrom = blockFrom(r);
     return '<tr>' + r.c.map(function(cell, i){
-      var cls = [], inner, nv = norm(cell.v);
+      var cls = [], inner, nv = norm(cell.v), blocked = bFrom >= 0 && i >= bFrom;
+      if (blocked) cls.push('blocked');
       if (i < stickyN) cls.push('sticky');
       if (gStart[i]) cls.push('gstart');
       if (wrapCols.indexOf(i) !== -1) cls.push('wrapcell');
-      var ed = edit[i], ld = ed ? rowLd(d, r) : '';
-      if (ed && cell.opts && ld) inner = '<select data-field="cell" data-ld="' + esc(ld) + '" data-i="' + i + '"' +
+      var ed = blocked ? null : edit[i], ld = ed ? rowLd(d, r) : '';
+      if (blocked) inner = esc(cell.v);
+      else if (ed && cell.opts && ld) inner = '<select data-field="cell" data-ld="' + esc(ld) + '" data-i="' + i + '"' +
         (state.pending[state.tab + '|' + ld + '|' + i] ? ' disabled' : '') +
         ' class="' + (cell.v && (nv === 'yes' || nv === 'no') ? nv : nv === 'done' ? 'yes' : '') + (state.pending[state.tab + '|' + ld + '|' + i] ? ' saving' : '') + '">' +
         '<option value="">—</option>' + cell.opts.map(function(v){ return '<option' + (norm(v) === nv ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('') +
